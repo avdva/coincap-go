@@ -1,5 +1,9 @@
 // Copyright 2017 Aleksandr Demakin. All rights reserved.
 
+// Package coincap is a simple coincap.io API wrapper library.
+// Note, that in many structs json.Number is used instead of string or float64.
+// This is because for some unknown reason coincap may send
+// same fields as numbers or as strings.
 package coincap
 
 import (
