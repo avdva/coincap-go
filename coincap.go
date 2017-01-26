@@ -102,7 +102,7 @@ type History struct {
 }
 
 // Client send API requests and parses responses.
-// It also can be used for subscribtion on websocket.
+// It also can be used for subscription on websocket.
 type Client struct {
 	cl *http.Client
 }
@@ -210,7 +210,7 @@ func (c *Client) get(url string, value interface{}) error {
 
 // SubscribeGlobal subscribes for websocket messages on 'global' channel.
 // All incoming messages are sent to 'dataChan'.
-// If there are errors during subscribtion, it returns an error immediately.
+// If there are errors during subscription, it returns an error immediately.
 // Otherwise, it blocks, waiting for an error, or stop signal.
 // If an error occures, it will be returned as the result.
 // Send to/close of 'stopChan' will close connection, and nil will be returned.
@@ -225,7 +225,7 @@ func (c *Client) SubscribeGlobal(dataChan chan<- *Global, stopChan <-chan struct
 
 // SubscribeTrades subscribes for websocket messages on 'trades' channel.
 // All incoming messages are sent to 'dataChan'.
-// If there are errors during subscribtion, it returns an error immediately.
+// If there are errors during subscription, it returns an error immediately.
 // Otherwise, it blocks, waiting for an error, or stop signal.
 // If an error occures, it will be returned as the result.
 // Send to/close of 'stopChan' will close connection, and nil will be returned.
