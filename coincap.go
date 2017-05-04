@@ -217,8 +217,11 @@ func (c *Client) get(url string, value interface{}) error {
 // If there are errors during subscription, it returns an error immediately.
 // Otherwise, it blocks, waiting for an error, or stop signal.
 // If an error occures, it will be returned as the result.
-// Send to/close of 'stopChan' will close connection, and nil will be returned.
-func (c *Client) SubscribeGlobal(dataChan chan<- *Global, stopChan <-chan struct{}) error {
+//	dataChan - a channel for Global messages.
+//	stopChan - a channel to cancel or reset ws subscribtion.
+//		close it or send 'true' to stop subscribtion.
+//		send 'false' to reconnect. May be useful, if updates stalled.
+func (c *Client) SubscribeGlobal(dataChan chan<- *Global, stopChan <-chan bool) error {
 	type wrapper struct {
 		Message Global
 	}
@@ -232,8 +235,11 @@ func (c *Client) SubscribeGlobal(dataChan chan<- *Global, stopChan <-chan struct
 // If there are errors during subscription, it returns an error immediately.
 // Otherwise, it blocks, waiting for an error, or stop signal.
 // If an error occures, it will be returned as the result.
-// Send to/close of 'stopChan' will close connection, and nil will be returned.
-func (c *Client) SubscribeTrades(dataChan chan<- *Trade, stopChan <-chan struct{}) error {
+//	dataChan - a channel for Trade messages.
+//	stopChan - a channel to cancel or reset ws subscribtion.
+//		close it or send 'true' to stop subscribtion.
+//		send 'false' to reconnect. May be useful, if updates stalled.
+func (c *Client) SubscribeTrades(dataChan chan<- *Trade, stopChan <-chan bool) error {
 	type wrapper struct {
 		Message Trade
 	}
@@ -242,32 +248,51 @@ func (c *Client) SubscribeTrades(dataChan chan<- *Trade, stopChan <-chan struct{
 	}, stopChan)
 }
 
-func (c *Client) subscribe(method string, handler interface{}, stopChan <-chan struct{}) error {
-	client, err := gosio.Dial(gosio.GetUrl(cWsURL, 80, false), transport.GetDefaultWebsocketTransport())
-	if err != nil {
-		return errors.Wrap(err, "coincap: ws dial error")
+func (c *Client) subscribe(method string, handler interface{}, stopChan <-chan bool) error {
+	makeClient := func(errCh chan error) (*gosio.Client, error) {
+		client, err := gosio.Dial(gosio.GetUrl(cWsURL, 80, false), transport.GetDefaultWebsocketTransport())
+		if err != nil {
+			return nil, errors.Wrap(err, "coincap: ws dial error")
+		}
+		defer func() {
+			if err != nil {
+				client.Close()
+			}
+		}()
+		err = client.On(gosio.OnDisconnection, func(ch *gosio.Channel) {
+			errCh <- errors.Errorf("websocket disconnected on channel %s", ch.Id())
+		})
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to setup disconnect handler")
+		}
+		err = client.On(gosio.OnError, func(ch *gosio.Channel) {
+			errCh <- errors.Errorf("websocket error on channel %s", ch.Id())
+		})
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to setup error handler")
+		}
+		if err = client.On(method, handler); err != nil {
+			return nil, errors.Wrap(err, "failed to setup message handler")
+		}
+		return client, nil
 	}
-	defer client.Close()
-	errCh := make(chan error, 2)
-	err = client.On(gosio.OnDisconnection, func(ch *gosio.Channel) {
-		errCh <- errors.Errorf("websocket disconnected on channel %s", ch.Id())
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to setup disconnect handler")
+	doConnect := func() (bool, error) {
+		errCh := make(chan error, 2)
+		client, err := makeClient(errCh)
+		if err != nil {
+			return false, err
+		}
+		defer client.Close()
+		select {
+		case err := <-errCh:
+			return false, err
+		case val, ok := <-stopChan:
+			return ok && !val, nil
+		}
 	}
-	err = client.On(gosio.OnError, func(ch *gosio.Channel) {
-		errCh <- errors.Errorf("websocket error on channel %s", ch.Id())
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to setup error handler")
-	}
-	if err = client.On(method, handler); err != nil {
-		return errors.Wrap(err, "failed to setup message handler")
-	}
-	select {
-	case err := <-errCh:
-		return err
-	case <-stopChan:
-		return nil
+	for {
+		if goon, err := doConnect(); !goon {
+			return err
+		}
 	}
 }
