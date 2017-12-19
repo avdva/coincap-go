@@ -9,6 +9,7 @@ package coincap
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	gosio "github.com/graarh/golang-socketio"
 	"github.com/graarh/golang-socketio/transport"
@@ -17,6 +18,7 @@ import (
 
 // HistoryInterval* consts are used in History() request.
 const (
+	HistoryIntervalAll     = ""
 	HistoryInterval1Day    = "1day"
 	HistoryInterval7Days   = "7day"
 	HistoryInterval30Days  = "30day"
@@ -26,50 +28,69 @@ const (
 )
 
 const (
-	cAPIURL = "http://coincap.io/"
-	cWsURL  = "socket.coincap.io"
+	cAPIURL = "https://coincap.io/"
+	cWsURL  = "coincap.io"
 )
-
-type market struct {
-	Time                 int64
-	Shapeshift           bool
-	Published            bool
-	IsBuy                bool
-	Short                string
-	Long                 string
-	Position24           json.Number
-	Position             json.Number
-	Perc                 json.Number
-	Volume               json.Number
-	USDVolume            json.Number
-	Cap24hrChange        json.Number
-	Mktcap               json.Number
-	Supply               json.Number
-	Cap24hrChangePercent json.Number
-	VwapData             *json.Number
-	VwapDataBTC          *json.Number
-}
 
 // Front is a reply for /front path.
 type Front struct {
-	market
-	Price json.Number
+	Long          string
+	Short         string
+	Shapeshift    bool
+	Price         json.Number
+	Cap24hrChange json.Number
+	Mktcap        json.Number
+	Perc          json.Number
+	Supply        json.Number
+	USDVolume     json.Number
+	Volume        json.Number
+	VwapData      *json.Number
+	VwapDataBTC   *json.Number
 }
 
-// Trade is a websocket message from 'trades' channel.
+// TradeData is a piece of information about a trade.
+type TradeData struct {
+	ExchangeID string `json:"exchange_id"`
+	MarketID   string `json:"market_id"`
+	Price      json.Number
+	Raw        struct {
+		ID        string
+		TimeStamp time.Time
+		Quantity  json.Number
+		Price     json.Number
+		Total     json.Number
+		FillType  string
+		OrderType string
+	}
+	TimestampMs int64 `json:"timestamp_ms"`
+	Volume      json.Number
+}
+
+// TradeMessage is a websocket message from 'trades' channel.
+type TradeMessage struct {
+	ExchangeID string `json:"exchange_id"`
+	MarketID   string `json:"market_id"`
+	Coin       string
+	Msg        Front
+}
+
+// Trade contains trade message and an optional trade data.
 type Trade struct {
-	Coin string
-	Msg  Front
+	Msg  TradeMessage
+	Data TradeData
 }
 
-// Global is a websocket message from 'global' channel,
-// and a reply for /global path.
+// Global is a websocket message from 'global' channel, and a reply for /global path.
 type Global struct {
 	BTCPrice      json.Number
 	BTCCap        json.Number
 	AltCap        json.Number
 	Dom           json.Number
 	BitnodesCount json.Number
+	TotalCap      json.Number
+	VolumeAlt     json.Number
+	VolumeBtc     json.Number
+	VolumeTotal   json.Number
 }
 
 // Mapping is a reply for /map path.
@@ -82,27 +103,30 @@ type Mapping struct {
 // Page is a reply for /page path.
 type Page struct {
 	Global
-	priceAndCap
-	market
-	USDPrice      json.Number
-	HomeURL       string
-	ExplorerURL   string
-	Twitter       string
-	DiscussionURL string
-	Mineable      bool
-	Premined      bool
-	PreminedSig   bool
-}
-
-type priceAndCap struct {
-	Price      [][2]json.Number
-	Market_Cap [][2]json.Number
+	ID           string
+	Type         string
+	IDD          string `json:"_id"`
+	DisplayName  string `json:"display_name"`
+	Status       string
+	PriceUSD     json.Number `json:"price_usd"`
+	PriceEUR     json.Number `json:"price_eur"`
+	PriceBTC     json.Number `json:"price_btc"`
+	PriceETH     json.Number `json:"price_eth"`
+	PriceZEC     json.Number `json:"price_zec"`
+	PriceLTC     json.Number `json:"price_ltc"`
+	MarketCap    json.Number `json:"market_cap"`
+	Cap24hChange json.Number `json:"cap24hrChange"`
+	Supply       json.Number
+	Volume       json.Number
+	Price        json.Number
+	VWAP24h      json.Number `json:"vwap_h24"`
 }
 
 // History is a reply for /history path.
 type History struct {
-	priceAndCap
-	Volume [][2]json.Number
+	Price     [][2]json.Number
+	MarketCap [][2]json.Number `json:"market_cap"`
+	Volume    [][2]json.Number
 }
 
 // Client send API requests and parses responses.
@@ -212,24 +236,6 @@ func (c *Client) get(url string, value interface{}) error {
 	return nil
 }
 
-// SubscribeGlobal subscribes for websocket messages on 'global' channel.
-// All incoming messages are sent to 'dataChan'.
-// If there are errors during subscription, it returns an error immediately.
-// Otherwise, it blocks, waiting for an error, or stop signal.
-// If an error occures, it will be returned as the result.
-//	dataChan - a channel for Global messages.
-//	stopChan - a channel to cancel or reset ws subscribtion.
-//		close it or send 'true' to stop subscribtion.
-//		send 'false' to reconnect. May be useful, if updates stalled.
-func (c *Client) SubscribeGlobal(dataChan chan<- *Global, stopChan <-chan bool) error {
-	type wrapper struct {
-		Message Global
-	}
-	return c.subscribe("global", func(ch *gosio.Channel, gm *wrapper) {
-		dataChan <- &gm.Message
-	}, stopChan)
-}
-
 // SubscribeTrades subscribes for websocket messages on 'trades' channel.
 // All incoming messages are sent to 'dataChan'.
 // If there are errors during subscription, it returns an error immediately.
@@ -241,16 +247,19 @@ func (c *Client) SubscribeGlobal(dataChan chan<- *Global, stopChan <-chan bool) 
 //		send 'false' to reconnect. May be useful, if updates stalled.
 func (c *Client) SubscribeTrades(dataChan chan<- *Trade, stopChan <-chan bool) error {
 	type wrapper struct {
-		Message Trade
+		Message TradeMessage
+		Trade   struct {
+			Data TradeData
+		}
 	}
-	return c.subscribe("trades", func(ch *gosio.Channel, tm *wrapper) {
-		dataChan <- &tm.Message
+	return c.subscribe("trades", func(ch *gosio.Channel, tm wrapper) {
+		dataChan <- &Trade{Msg: tm.Message, Data: tm.Trade.Data}
 	}, stopChan)
 }
 
 func (c *Client) subscribe(method string, handler interface{}, stopChan <-chan bool) error {
 	makeClient := func(errCh chan error) (*gosio.Client, error) {
-		client, err := gosio.Dial(gosio.GetUrl(cWsURL, 80, false), transport.GetDefaultWebsocketTransport())
+		client, err := gosio.Dial(gosio.GetUrl(cWsURL, 443, true), transport.GetDefaultWebsocketTransport())
 		if err != nil {
 			return nil, errors.Wrap(err, "coincap: ws dial error")
 		}
